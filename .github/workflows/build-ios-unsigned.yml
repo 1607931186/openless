@@ -4,12 +4,9 @@ name: Build OpenLess unsigned IPA
 # 编译环境 = GitHub 托管 xcode-27 预览镜像（macOS 27 + Xcode 27.1，Apple silicon）。
 
 on:
+  push:
+    branches: [unsigned-ipa]
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "把 IPA 挂到这个 Release tag（留空则只上传 artifact）"
-        required: false
-        default: "ios-unsigned"
 
 permissions:
   contents: write
@@ -26,6 +23,7 @@ jobs:
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
+      RELEASE_TAG: ios-unsigned
     defaults:
       run:
         working-directory: openless-all/ios
@@ -92,10 +90,10 @@ jobs:
           retention-days: 30
 
       - name: Attach IPA to Release
-        if: ${{ inputs.release_tag != '' }}
+        if: ${{ env.RELEASE_TAG != '' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
+          tag_name: ${{ env.RELEASE_TAG }}
           name: OpenLess unsigned IPA
           body: |
             未经签名的 OpenLess iOS 包（app + 键盘扩展 + 录音 Widget）。
