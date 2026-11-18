@@ -1,0 +1,105 @@
+name: Build OpenLess unsigned IPA
+
+# 只产出未签名 IPA；签名与安装由用户在自己的 iPhone 上完成。
+# 编译环境 = GitHub 托管 xcode-27 预览镜像（macOS 27 + Xcode 27.1，Apple silicon）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "把 IPA 挂到这个 Release tag（留空则只上传 artifact）"
+        required: false
+        default: "ios-unsigned"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ios-unsigned-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Unsigned iOS IPA
+    runs-on: xcode-27
+    timeout-minutes: 150
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    defaults:
+      run:
+        working-directory: openless-all/ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+          swift --version || true
+          command -v cmake >/dev/null || brew install cmake
+
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Bootstrap dependencies (XcodeGen / librime / boost / Rust / core patch)
+        timeout-minutes: 30
+        run: bash scripts/bootstrap.sh
+
+      - name: Prepare verified local speech dependencies
+        timeout-minutes: 15
+        run: bash scripts/bootstrap-local-speech.sh
+
+      - name: Build Rime and offline predictions
+        timeout-minutes: 45
+        run: |
+          bash scripts/build-rime.sh host
+          bash scripts/build-rime.sh device
+          test -f Resources/Prediction/lexicon.sqlite3
+          test -f Resources/Rime/build/pinyin_simp.table.bin
+
+      - name: Build mobile Core and refresh attribution
+        timeout-minutes: 30
+        run: |
+          bash scripts/build-core.sh device
+          python3 scripts/collect-rust-licenses.py
+
+      - name: Validate project
+        run: python3 scripts/validate-project.py
+
+      - name: Build unsigned device app
+        timeout-minutes: 35
+        env:
+          OPENLESS_DERIVED_DATA: ${{ runner.temp }}/ios-device
+        run: bash scripts/build.sh device Release unsigned
+
+      - name: Package unsigned IPA
+        run: |
+          python3 scripts/package-ipa.py \
+            "$RUNNER_TEMP/ios-device/Build/Products/Release-iphoneos/OpenLess.app" \
+            "$RUNNER_TEMP/OpenLess-unsigned.ipa"
+          ls -lh "$RUNNER_TEMP/OpenLess-unsigned.ipa"
+          shasum -a 256 "$RUNNER_TEMP/OpenLess-unsigned.ipa"
+          unzip -l "$RUNNER_TEMP/OpenLess-unsigned.ipa" | head -30
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenLess-unsigned-ipa
+          path: ${{ runner.temp }}/OpenLess-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach IPA to Release
+        if: ${{ inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: OpenLess unsigned IPA
+          body: |
+            未经签名的 OpenLess iOS 包（app + 键盘扩展 + 录音 Widget）。
+            签名与安装请在 iPhone 上用你自己的证书完成。
+            构建来源：`${{ github.sha }}`（branch `${{ github.ref_name }}`）。
+          files: ${{ runner.temp }}/OpenLess-unsigned.ipa
+          fail_on_unmatched_files: true
